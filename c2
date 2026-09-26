@@ -1,0 +1,2227 @@
+-- ============================================================
+--  C2 Hub  |  Blue Theme  |  Code Font  |  Toggle: RightShift
+--  Merged features: Aim (draggable pin) | Visuals (ESP)
+--  Skin Changer (Melee+Skin) | Extra (Crafting, Cases, FX, Kill)
+--  Persistent settings | Hold/Toggle aim mode
+--  FIXED: Melee swapper now restores correctly
+-- ============================================================
+
+local Players       = game:GetService("Players")
+local RunService    = game:GetService("RunService")
+local Camera        = workspace.CurrentCamera
+local player        = game.Players.LocalPlayer
+local playerGui     = player.PlayerGui
+local uis           = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local tweenService  = game:GetService("TweenService")
+local tweenInfo     = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local hoverInfo     = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local closeTweenInfo= TweenInfo.new(0.2,  Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+-- ════════════════════════════════════════════════════════════
+--  PERSISTENT SETTINGS
+-- ════════════════════════════════════════════════════════════
+local SAVE_FILE = "C2Hub/settings.json"
+local defaultSettings = {
+    selectedMelee   = "Dagger",
+    ownedSkin       = "Ace Pilot",
+    targetSkin      = "Da Monky",
+    killEffect      = nil,
+    craftingUnlocker= false,
+    espEnabled      = false,
+    espEnemyOnly    = true,
+    espShowDistance = false,
+    motionBlur      = false,
+    nightMode       = false,
+    aimbotEnabled   = false,
+    aimbotFOV       = 150,
+    aimbotVisualizeFOV = false,
+    aimbotWallCheck = false,
+    softEnabled     = false,
+    softFOV         = 200,
+    softSmoothness  = 5,
+    softVisualizeFOV= false,
+    softWallCheck   = false,
+    softRandomTarget= false,
+    aimKey          = "LeftShift",
+    teamCheck       = true,
+    aimOffset       = 0.3,
+    aimToggleMode   = false,
+    aimbotFOVColor  = {255, 80, 80},
+    softFOVColor    = {80, 160, 255},
+}
+
+local cfg = {}
+local function isfileAvailable()  return type(isfile)  == "function" end
+local function readfileAvailable() return type(readfile) == "function" end
+local function writefileAvailable() return type(writefile) == "function" end
+local function mkdirAvailable()  return type(makefolder) == "function" end
+
+local function jsonEncode(t)
+    local parts = {}
+    for k, v in pairs(t) do
+        local vStr
+        if type(v) == "boolean" or type(v) == "number" then
+            vStr = tostring(v)
+        else
+            vStr = '"' .. tostring(v):gsub('"', '\\"') .. '"'
+        end
+        table.insert(parts, '"' .. k .. '": ' .. vStr)
+    end
+    return "{\n  " .. table.concat(parts, ",\n  ") .. "\n}"
+end
+
+local function jsonDecode(s)
+    local result = {}
+    for k, v in s:gmatch('"([^"]+)"%s*:%s*([^,}\n]+)') do
+        v = v:match("^%s*(.-)%s*$")
+        if v == "true" then result[k] = true
+        elseif v == "false" then result[k] = false
+        elseif tonumber(v) then result[k] = tonumber(v)
+        else result[k] = v:match('^"(.*)"$') or v
+        end
+    end
+    return result
+end
+
+local function loadSettings()
+    for k, v in pairs(defaultSettings) do cfg[k] = v end
+    if not (isfileAvailable() and readfileAvailable()) then return end
+    local ok, data = pcall(function()
+        if isfile(SAVE_FILE) then return readfile(SAVE_FILE) end
+    end)
+    if ok and data and data ~= "" then
+        local success, decoded = pcall(jsonDecode, data)
+        if success and decoded then
+            for k in pairs(defaultSettings) do
+                if decoded[k] ~= nil then cfg[k] = decoded[k] end
+            end
+        end
+    end
+end
+
+local function saveSettings()
+    if not writefileAvailable() then return end
+    if mkdirAvailable() then pcall(makefolder, "C2Hub") end
+    pcall(writefile, SAVE_FILE, jsonEncode(cfg))
+end
+
+loadSettings()
+
+-- ─── Colour palette ──────────────────────────────────────────
+local C = {
+    bg0    = Color3.fromRGB(7,   9,  14),
+    bg1    = Color3.fromRGB(13,  17, 23),
+    bg2    = Color3.fromRGB(17,  22, 32),
+    bg3    = Color3.fromRGB(23,  29, 42),
+    bg4    = Color3.fromRGB(30,  38, 54),
+    accent = Color3.fromRGB(32,  96, 208),
+    accentH= Color3.fromRGB(48, 112, 224),
+    accentL= Color3.fromRGB(80, 144, 240),
+    t1     = Color3.fromRGB(232, 238, 248),
+    t2     = Color3.fromRGB(138, 160, 192),
+    t3     = Color3.fromRGB(80,  96, 128),
+    t4     = Color3.fromRGB(46,  61,  84),
+    border = Color3.fromRGB(26,  34,  53),
+    border2= Color3.fromRGB(37,  48,  69),
+    warnBg = Color3.fromRGB(26,  18,   0),
+    warnTx = Color3.fromRGB(192, 144,  64),
+    ok     = Color3.fromRGB(62, 207, 114),
+    err    = Color3.fromRGB(240,  72,  72),
+    warn   = Color3.fromRGB(224, 160,  48),
+    rowAct = Color3.fromRGB(13,  17,  23),
+    white  = Color3.fromRGB(255, 255, 255),
+}
+
+-- ─── meleeList ───────────────────────────────────────────────
+local meleeList = {
+    "ACT Trophy","ACT Trophy S6","Aged Shovel","Annihilator's Broken Sword",
+    "Assimilator","Balloon Sword","Ban Hammer","Banana","Bat","Bat Axe",
+    "Battle Axe","Baton","Beast Hammer","Big Sip","Blade","Blast Hammer",
+    "Blossoming Femur","Bloxy","Bone Club","Bone Karambit","Bouquet",
+    "Brass Knuckles","Brick","Bunny Staff","Butterfly Knife","Calculator",
+    "Can Mace","Candle Sword","Candleabra","Candy Cane","Candy Cane Claws",
+    "Candy Cane Sword","Carrot","Chainsaw","Classic Sword","Claws",
+    "Coal Scythe","Coal Sword","Combat Knife","Coral Blade","Crab Claw",
+    "Crowbar","Crucible","Da Melee","Dagger","Daito","Death's Blade",
+    "Delinquent Pop","Digi-Blade","Divine Medallions","Divinity","Doodle Sign",
+    "Doublade","Drill-Shear Skewer","Earth Cleaver","Easter Cleaver","Egg",
+    "Electric Flail","Electro Axe","Electronic Stake","Endbringer",
+    "Energy Blade","Energy Katar","FOAM BLADE 3000","Fire Poker","Fish",
+    "Fisticuffs","Frog","Frostweaver's Wand","Garlic Kebab","Gaster Blaster",
+    "Ghost Ripper","Gingerbread Knife","Glacier Blade","Golden Rings",
+    "Grumpy Hammer","Guitar","Halberd","Hallow's Scythe","Handblades",
+    "Handy Candy","Harvester","Heart Break","Hero's Sword","Icicle",
+    "Karambit","Katana","Katar","Khopesh","Killbrick Melee","Kitchen Knife",
+    "Kukri","Kunai","Leader's Axe","Let The Skies Fall","Literal Melee",
+    "Loaf","Machete","Makeshift Axe","Makeshift Saw","Merry Masker",
+    "Mittens","Moai","Moderation Hammer","Mop","Naginata","Newspaper",
+    "Night's Edge","Nomad's Blade","OG Space Katana","Paddle","Paint Brush",
+    "Pan","Pencil","Peppermint Hammer","Peppermint Slicer","Pipe Wrench Shank",
+    "Pitchfork","Plane","Pumpkin Axe","Pumpkin Bucket","Pumpkin Staff",
+    "R.A.M","Racket","Rapier","Rebel's Bat","Reclaimer","Reliable Hammer",
+    "Rokia Hammer","Roughian's Pipe","Rubber Hammer","Rusty Pipe","Saber",
+    "Sabre","Scythe","Seal","Shovel","Sickle","Silver Bell","Sip O' Stink",
+    "Skele Scythe","Skull Pal","Slappy","Sledgehammer","Slicecicle",
+    "Smug Egg","Space Katana","Space KatanaOLD","Spring Greatsword",
+    "Starfire Staff","Stinger","Stop Sign","Stranger's Handblades",
+    "SuperSpaceKatana","Swift End","Swordfish","Synthlight Greatsword",
+    "Tactical Knife","The Darkheart","The Firebrand","The Fool's Tool",
+    "The Ghostwalker","The Ice Dagger","The Illumina","The Scrambler",
+    "The Venomshank","The Windforce","Tomahawk","Toy Tree","When Day Breaks",
+    "Wired Bat","Wooden Spoon","Wrench"
+}
+
+-- ─── Kill effects list ───────────────────────────────────────
+local killEffectList = {
+    "Blackhole","Inferno","Galaxy","Vortex","Lightning","Frostbite","Toxic",
+    "Crimson","Shadow","Solar","Neon","Spectral","Void","Ember","Arctic"
+}
+
+-- ─── helpers ─────────────────────────────────────────────────
+local function corner(px, parent)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, px)
+    c.Parent = parent
+    return c
+end
+local function padding(t, l, r, b, parent)
+    local p = Instance.new("UIPadding")
+    p.PaddingTop    = UDim.new(0, t or 0)
+    p.PaddingLeft   = UDim.new(0, l or 0)
+    p.PaddingRight  = UDim.new(0, r or 0)
+    p.PaddingBottom = UDim.new(0, b or 0)
+    p.Parent = parent
+    return p
+end
+
+-- ─── renameMelee (with automatic slot fallback) ────────────
+local currentMelee = "Dagger"
+
+local function renameMelee(newName)
+    -- First try to rename the current slot
+    local success, err = pcall(function()
+        local slot = player.PlayerGui.Favourites.Melees[currentMelee]
+        if slot then
+            slot.Name = newName
+            currentMelee = newName
+            return true
+        end
+        return false
+    end)
+    if success then
+        return true
+    end
+    -- If that fails, try the "Dagger" slot as fallback
+    local ok, err2 = pcall(function()
+        local daggerSlot = player.PlayerGui.Favourites.Melees["Dagger"]
+        if daggerSlot then
+            daggerSlot.Name = newName
+            currentMelee = newName
+            return true
+        end
+        return false
+    end)
+    if not ok then
+        warn("Failed to rename melee: " .. tostring(err2))
+        return false
+    end
+    return true
+end
+
+-- ─── Restore saved melee on load ──────────────────────────
+if cfg.selectedMelee ~= "Dagger" then
+    task.defer(function()
+        local elapsed = 0
+        local conn
+        conn = RunService.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            local ok = pcall(function()
+                local slot = player.PlayerGui.Favourites.Melees["Dagger"]
+                if slot then
+                    slot.Name = cfg.selectedMelee
+                    currentMelee = cfg.selectedMelee
+                    return true
+                end
+                return false
+            end)
+            if ok then
+                conn:Disconnect()
+            elseif elapsed > 10 then
+                warn("C2Hub: Could not restore saved melee slot within 10s")
+                conn:Disconnect()
+            end
+        end)
+    end)
+else
+    currentMelee = "Dagger"
+end
+
+-- ════════════════════════════════════════════════════════════
+--  ROOT GUI
+-- ════════════════════════════════════════════════════════════
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "C2Hub"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 999
+screenGui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Name = "MainFrame"
+frame.Size = UDim2.new(0, 640, 0, 480)
+frame.Position = UDim2.new(0.5, -320, 0.5, -240)
+frame.BackgroundColor3 = C.bg1
+frame.BorderSizePixel = 0
+frame.Visible = false
+frame.Parent = screenGui
+corner(14, frame)
+
+-- ─── Titlebar ──────────────────────────────────────────────
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 50)
+titleBar.BackgroundColor3 = C.bg0
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+corner(14, titleBar)
+
+local tbCover = Instance.new("Frame")
+tbCover.Size = UDim2.new(1, 0, 0, 14)
+tbCover.Position = UDim2.new(0, 0, 1, -14)
+tbCover.BackgroundColor3 = C.bg0
+tbCover.BorderSizePixel = 0
+tbCover.ZIndex = 2
+tbCover.Parent = titleBar
+
+local logoMark = Instance.new("TextLabel")
+logoMark.Size = UDim2.new(0, 26, 0, 26)
+logoMark.Position = UDim2.new(0, 14, 0.5, -13)
+logoMark.BackgroundColor3 = C.accent
+logoMark.TextColor3 = C.white
+logoMark.Text = "C2"
+logoMark.Font = Enum.Font.Code
+logoMark.TextSize = 12
+logoMark.ZIndex = 3
+logoMark.Parent = titleBar
+corner(5, logoMark)
+
+local logoText = Instance.new("TextLabel")
+logoText.Size = UDim2.new(0, 80, 1, 0)
+logoText.Position = UDim2.new(0, 46, 0, 0)
+logoText.BackgroundTransparency = 1
+logoText.Text = "HUB"
+logoText.TextColor3 = C.t1
+logoText.Font = Enum.Font.Code
+logoText.TextSize = 16
+logoText.TextXAlignment = Enum.TextXAlignment.Left
+logoText.ZIndex = 3
+logoText.Parent = titleBar
+
+local keybindBadge = Instance.new("TextLabel")
+keybindBadge.Size = UDim2.new(0, 72, 0, 22)
+keybindBadge.Position = UDim2.new(1, -88, 0.5, -11)
+keybindBadge.BackgroundColor3 = C.bg3
+keybindBadge.TextColor3 = C.t3
+keybindBadge.Text = "RShift"
+keybindBadge.Font = Enum.Font.Code
+keybindBadge.TextSize = 10
+keybindBadge.ZIndex = 3
+keybindBadge.Parent = titleBar
+corner(4, keybindBadge)
+
+local tbBorder = Instance.new("Frame")
+tbBorder.Size = UDim2.new(1, 0, 0, 1)
+tbBorder.Position = UDim2.new(0, 0, 0, 50)
+tbBorder.BackgroundColor3 = C.border
+tbBorder.BorderSizePixel = 0
+tbBorder.Parent = frame
+
+-- ─── Sidebar ──────────────────────────────────────────────
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.new(0, 172, 1, -51)
+sidebar.Position = UDim2.new(0, 0, 0, 51)
+sidebar.BackgroundColor3 = C.bg0
+sidebar.BorderSizePixel = 0
+sidebar.Parent = frame
+
+local sidebarLayout = Instance.new("UIListLayout")
+sidebarLayout.SortOrder = Enum.SortOrder.LayoutOrder
+sidebarLayout.Padding = UDim.new(0, 2)
+sidebarLayout.Parent = sidebar
+padding(14, 10, 10, 0, sidebar)
+
+local sidebarSection = Instance.new("TextLabel")
+sidebarSection.Size = UDim2.new(1, 0, 0, 16)
+sidebarSection.BackgroundTransparency = 1
+sidebarSection.Text = "NAVIGATION"
+sidebarSection.TextColor3 = C.t4
+sidebarSection.Font = Enum.Font.Code
+sidebarSection.TextSize = 9
+sidebarSection.TextXAlignment = Enum.TextXAlignment.Left
+sidebarSection.LayoutOrder = 0
+sidebarSection.Parent = sidebar
+padding(0, 6, 6, 6, sidebarSection)
+
+local sidebarDivider = Instance.new("Frame")
+sidebarDivider.Size = UDim2.new(0, 1, 1, -51)
+sidebarDivider.Position = UDim2.new(0, 172, 0, 51)
+sidebarDivider.BackgroundColor3 = C.border
+sidebarDivider.BorderSizePixel = 0
+sidebarDivider.Parent = frame
+
+local creditLabel = Instance.new("TextLabel")
+creditLabel.Size = UDim2.new(1, 0, 0, 18)
+creditLabel.Position = UDim2.new(0, 0, 1, -28)
+creditLabel.BackgroundTransparency = 1
+creditLabel.TextColor3 = C.t4
+creditLabel.Text = "by C2"
+creditLabel.Font = Enum.Font.Code
+creditLabel.TextSize = 10
+creditLabel.ZIndex = 2
+creditLabel.Parent = sidebar
+
+local footerLine = Instance.new("Frame")
+footerLine.Size = UDim2.new(1, -20, 0, 1)
+footerLine.Position = UDim2.new(0, 10, 1, -34)
+footerLine.BackgroundColor3 = C.border
+footerLine.BorderSizePixel = 0
+footerLine.ZIndex = 2
+footerLine.Parent = sidebar
+
+-- ─── Nav button factory ────────────────────────────────────
+local function makeNavBtn(icon, label, sublabel, order)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 44)
+    btn.BackgroundColor3 = C.bg3
+    btn.BackgroundTransparency = 1
+    btn.BorderSizePixel = 0
+    btn.Text = ""
+    btn.LayoutOrder = order
+    btn.Parent = sidebar
+    corner(8, btn)
+
+    local iconBox = Instance.new("Frame")
+    iconBox.Size = UDim2.new(0, 28, 0, 28)
+    iconBox.Position = UDim2.new(0, 10, 0.5, -14)
+    iconBox.BackgroundColor3 = C.bg3
+    iconBox.BorderSizePixel = 0
+    iconBox.ZIndex = 2
+    iconBox.Parent = btn
+    corner(6, iconBox)
+
+    local iconLabel = Instance.new("TextLabel")
+    iconLabel.Size = UDim2.new(1, 0, 1, 0)
+    iconLabel.BackgroundTransparency = 1
+    iconLabel.Text = icon
+    iconLabel.TextSize = 14
+    iconLabel.Font = Enum.Font.Code
+    iconLabel.ZIndex = 3
+    iconLabel.Parent = iconBox
+
+    local mainLabel = Instance.new("TextLabel")
+    mainLabel.Size = UDim2.new(1, -50, 0, 16)
+    mainLabel.Position = UDim2.new(0, 46, 0.5, -16)
+    mainLabel.BackgroundTransparency = 1
+    mainLabel.Text = label
+    mainLabel.TextColor3 = C.t3
+    mainLabel.Font = Enum.Font.Code
+    mainLabel.TextSize = 12
+    mainLabel.TextXAlignment = Enum.TextXAlignment.Left
+    mainLabel.ZIndex = 2
+    mainLabel.Parent = btn
+
+    local subLabel = Instance.new("TextLabel")
+    subLabel.Size = UDim2.new(1, -50, 0, 12)
+    subLabel.Position = UDim2.new(0, 46, 0.5, 2)
+    subLabel.BackgroundTransparency = 1
+    subLabel.Text = sublabel
+    subLabel.TextColor3 = C.t4
+    subLabel.Font = Enum.Font.Code
+    subLabel.TextSize = 10
+    subLabel.TextXAlignment = Enum.TextXAlignment.Left
+    subLabel.ZIndex = 2
+    subLabel.Parent = btn
+
+    local indicator = Instance.new("Frame")
+    indicator.Size = UDim2.new(0, 3, 0.55, 0)
+    indicator.Position = UDim2.new(1, -3, 0.225, 0)
+    indicator.BackgroundColor3 = C.accentH
+    indicator.BorderSizePixel = 0
+    indicator.Visible = false
+    indicator.ZIndex = 2
+    indicator.Parent = btn
+    corner(2, indicator)
+
+    return btn, iconBox, mainLabel, subLabel, indicator
+end
+
+-- Tab order: Aim, Visuals, SkinChanger, Extra
+local aimTabBtn,   aimIconBox,   aimLbl,   aimSub,   aimInd   = makeNavBtn("🎯", "Aim",     "Combat",    1)
+local visTabBtn,   visIconBox,   visLbl,   visSub,   visInd   = makeNavBtn("👁", "Visuals", "ESP",       2)
+local skinTabBtn,  skinIconBox,  skinLbl,  skinSub,  skinInd  = makeNavBtn("🎨", "Skin",    "Changer",   3)
+local extraTabBtn, extraIconBox, extraLbl, extraSub, extraInd = makeNavBtn("⚙",  "Extra",   "Utilities", 4)
+
+local allNavBtns = {
+    {btn=aimTabBtn, ib=aimIconBox, ml=aimLbl, sl=aimSub, ind=aimInd},
+    {btn=visTabBtn, ib=visIconBox, ml=visLbl, sl=visSub, ind=visInd},
+    {btn=skinTabBtn,ib=skinIconBox,ml=skinLbl,sl=skinSub,ind=skinInd},
+    {btn=extraTabBtn,ib=extraIconBox,ml=extraLbl,sl=extraSub,ind=extraInd},
+}
+
+local function setActiveTab(activeBtn)
+    for _, t in ipairs(allNavBtns) do
+        local isActive = (t.btn == activeBtn)
+        t.btn.BackgroundTransparency = isActive and 0 or 1
+        t.btn.BackgroundColor3 = C.bg3
+        t.ib.BackgroundColor3 = isActive and C.accent or C.bg3
+        t.ml.TextColor3 = isActive and C.t1 or C.t3
+        t.sl.TextColor3 = isActive and C.t3 or C.t4
+        t.ind.Visible = isActive
+    end
+end
+
+-- ─── Main content area ─────────────────────────────────────
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -173, 1, -51)
+content.Position = UDim2.new(0, 173, 0, 51)
+content.BackgroundColor3 = C.bg2
+content.BorderSizePixel = 0
+content.ClipsDescendants = true
+content.Parent = frame
+
+-- ════════════════════════════════════════════════════════════
+--  SHARED: toggle row factory (used by Extra, Visuals)
+-- ════════════════════════════════════════════════════════════
+local function makeToggleRow(icon, titleTxt, descTxt, yPos, onToggle, initState, parentFrame)
+    local rowBg = Instance.new("Frame")
+    rowBg.Size = UDim2.new(1, 0, 0, 72)
+    rowBg.Position = UDim2.new(0, 0, 0, yPos)
+    rowBg.BackgroundColor3 = initState and C.rowAct or C.bg0
+    rowBg.BorderSizePixel = 0
+    rowBg.Parent = parentFrame
+    corner(12, rowBg)
+
+    local iconBox = Instance.new("Frame")
+    iconBox.Size = UDim2.new(0, 32, 0, 32)
+    iconBox.Position = UDim2.new(0, 14, 0.5, -16)
+    iconBox.BackgroundColor3 = C.bg4
+    iconBox.BorderSizePixel = 0
+    iconBox.Parent = rowBg
+    corner(7, iconBox)
+
+    local iconLbl = Instance.new("TextLabel")
+    iconLbl.Size = UDim2.new(1, 0, 1, 0)
+    iconLbl.BackgroundTransparency = 1
+    iconLbl.Text = icon
+    iconLbl.TextSize = 15
+    iconLbl.Font = Enum.Font.Code
+    iconLbl.Parent = iconBox
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -120, 0, 16)
+    titleLabel.Position = UDim2.new(0, 56, 0, 16)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = titleTxt
+    titleLabel.TextColor3 = C.t1
+    titleLabel.Font = Enum.Font.Code
+    titleLabel.TextSize = 13
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = rowBg
+
+    local descLabel = Instance.new("TextLabel")
+    descLabel.Size = UDim2.new(1, -120, 0, 28)
+    descLabel.Position = UDim2.new(0, 56, 0, 34)
+    descLabel.BackgroundTransparency = 1
+    descLabel.Text = descTxt
+    descLabel.TextColor3 = C.t3
+    descLabel.Font = Enum.Font.Code
+    descLabel.TextSize = 10
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.TextWrapped = true
+    descLabel.Parent = rowBg
+
+    local toggleTrack = Instance.new("Frame")
+    toggleTrack.Size = UDim2.new(0, 48, 0, 26)
+    toggleTrack.Position = UDim2.new(1, -64, 0.5, -13)
+    toggleTrack.BackgroundColor3 = initState and C.accent or C.bg4
+    toggleTrack.BorderSizePixel = 0
+    toggleTrack.Parent = rowBg
+    corner(13, toggleTrack)
+
+    local toggleKnob = Instance.new("Frame")
+    toggleKnob.Size = UDim2.new(0, 18, 0, 18)
+    toggleKnob.Position = initState and UDim2.new(0, 26, 0.5, -9) or UDim2.new(0, 4, 0.5, -9)
+    toggleKnob.BackgroundColor3 = initState and C.white or C.t3
+    toggleKnob.BorderSizePixel = 0
+    toggleKnob.Parent = toggleTrack
+    corner(9, toggleKnob)
+
+    local rowBtn = Instance.new("TextButton")
+    rowBtn.Size = UDim2.new(1, 0, 1, 0)
+    rowBtn.BackgroundTransparency = 1
+    rowBtn.Text = ""
+    rowBtn.ZIndex = 5
+    rowBtn.Parent = rowBg
+
+    local isOn = initState or false
+    rowBtn.MouseButton1Click:Connect(function()
+        isOn = not isOn
+        if isOn then
+            tweenService:Create(toggleTrack, tweenInfo, {BackgroundColor3 = C.accent}):Play()
+            tweenService:Create(toggleKnob, tweenInfo, {Position = UDim2.new(0, 26, 0.5, -9), BackgroundColor3 = C.white}):Play()
+            tweenService:Create(rowBg, tweenInfo, {BackgroundColor3 = C.rowAct}):Play()
+        else
+            tweenService:Create(toggleTrack, tweenInfo, {BackgroundColor3 = C.bg4}):Play()
+            tweenService:Create(toggleKnob, tweenInfo, {Position = UDim2.new(0, 4, 0.5, -9), BackgroundColor3 = C.t3}):Play()
+            tweenService:Create(rowBg, tweenInfo, {BackgroundColor3 = C.bg0}):Play()
+        end
+        if onToggle then onToggle(isOn) end
+        saveSettings()
+    end)
+
+    return rowBtn, rowBg, toggleTrack, toggleKnob
+end
+
+-- ════════════════════════════════════════════════════════════
+--  AIM PANEL (with draggable silhouette)
+-- ════════════════════════════════════════════════════════════
+local aimPanel = Instance.new("ScrollingFrame")
+aimPanel.Size = UDim2.new(1, 0, 1, 0)
+aimPanel.CanvasSize = UDim2.new(0, 0, 0, 700)
+aimPanel.ScrollBarThickness = 3
+aimPanel.ScrollBarImageColor3 = C.accent
+aimPanel.BackgroundColor3 = C.bg2
+aimPanel.BackgroundTransparency = 1
+aimPanel.BorderSizePixel = 0
+aimPanel.Visible = false
+aimPanel.Parent = content
+padding(20, 22, 22, 0, aimPanel)
+
+-- ── Panel header ─────────────────────────────────────────
+local aimPanelTitle = Instance.new("TextLabel")
+aimPanelTitle.Size = UDim2.new(1, -80, 0, 22)
+aimPanelTitle.BackgroundTransparency = 1
+aimPanelTitle.Text = "Aim Assist"
+aimPanelTitle.TextColor3 = C.t1
+aimPanelTitle.Font = Enum.Font.Code
+aimPanelTitle.TextSize = 17
+aimPanelTitle.TextXAlignment = Enum.TextXAlignment.Left
+aimPanelTitle.Parent = aimPanel
+
+local aimBadge = Instance.new("TextLabel")
+aimBadge.Size = UDim2.new(0, 64, 0, 20)
+aimBadge.Position = UDim2.new(1, -64, 0, 1)
+aimBadge.BackgroundColor3 = C.bg4
+aimBadge.TextColor3 = C.t3
+aimBadge.Text = "Combat"
+aimBadge.Font = Enum.Font.Code
+aimBadge.TextSize = 10
+aimBadge.Parent = aimPanel
+corner(4, aimBadge)
+
+-- ── Shared helpers ────────────────────────────────────────
+local function aimToggle(label, configKey, yPos, callback)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 36)
+    row.Position = UDim2.new(0, 0, 0, yPos)
+    row.BackgroundColor3 = C.bg0
+    row.BorderSizePixel = 0
+    row.Parent = aimPanel
+    corner(8, row)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -80, 1, 0)
+    lbl.Position = UDim2.new(0, 14, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = C.t2
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(0, 44, 0, 24)
+    track.Position = UDim2.new(1, -56, 0.5, -12)
+    track.BackgroundColor3 = cfg[configKey] and C.accent or C.bg4
+    track.BorderSizePixel = 0
+    track.Parent = row
+    corner(12, track)
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 16, 0, 16)
+    knob.Position = cfg[configKey] and UDim2.new(0, 24, 0.5, -8) or UDim2.new(0, 4, 0.5, -8)
+    knob.BackgroundColor3 = C.white
+    knob.BorderSizePixel = 0
+    knob.Parent = track
+    corner(8, knob)
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.ZIndex = 3
+    btn.Parent = row
+    btn.MouseButton1Click:Connect(function()
+        cfg[configKey] = not cfg[configKey]
+        tweenService:Create(track, hoverInfo, {BackgroundColor3 = cfg[configKey] and C.accent or C.bg4}):Play()
+        tweenService:Create(knob, hoverInfo, {Position = cfg[configKey] and UDim2.new(0, 24, 0.5, -8) or UDim2.new(0, 4, 0.5, -8)}):Play()
+        if callback then callback(cfg[configKey]) end
+        saveSettings()
+    end)
+    return row
+end
+
+local function aimSlider(label, configKey, min, max, step, yPos, fmt)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 52)
+    row.Position = UDim2.new(0, 0, 0, yPos)
+    row.BackgroundColor3 = C.bg0
+    row.BorderSizePixel = 0
+    row.Parent = aimPanel
+    corner(8, row)
+    padding(0, 14, 14, 0, row)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.65, 0, 0, 20)
+    lbl.Position = UDim2.new(0, 0, 0, 8)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = C.t2
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Size = UDim2.new(0.35, 0, 0, 20)
+    valLbl.Position = UDim2.new(0.65, 0, 0, 8)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = fmt and fmt(cfg[configKey]) or tostring(cfg[configKey])
+    valLbl.TextColor3 = C.accentL
+    valLbl.Font = Enum.Font.Code
+    valLbl.TextSize = 12
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.Parent = row
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, 0, 0, 4)
+    track.Position = UDim2.new(0, 0, 0, 36)
+    track.BackgroundColor3 = C.bg4
+    track.BorderSizePixel = 0
+    track.Parent = row
+    corner(2, track)
+
+    local fill = Instance.new("Frame")
+    local pct = (cfg[configKey] - min) / (max - min)
+    fill.Size = UDim2.new(pct, 0, 1, 0)
+    fill.BackgroundColor3 = C.accent
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+    corner(2, fill)
+
+    local thumb = Instance.new("TextButton")
+    thumb.Size = UDim2.new(0, 14, 0, 14)
+    thumb.Position = UDim2.new(pct, -7, 0.5, -7)
+    thumb.BackgroundColor3 = C.accentH
+    thumb.BorderSizePixel = 0
+    thumb.Text = ""
+    thumb.Parent = row
+    corner(7, thumb)
+
+    local dragging = false
+    thumb.MouseButton1Down:Connect(function() dragging = true end)
+    uis.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
+    uis.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local tp = track.AbsolutePosition.X
+            local ts = track.AbsoluteSize.X
+            local p = math.clamp((uis:GetMouseLocation().X - tp) / ts, 0, 1)
+            local v = min + p * (max - min)
+            if step then v = math.round(v / step) * step end
+            v = math.clamp(v, min, max)
+            cfg[configKey] = v
+            fill.Size = UDim2.new(p, 0, 1, 0)
+            thumb.Position = UDim2.new(p, -7, 0.5, -7)
+            valLbl.Text = fmt and fmt(v) or tostring(v)
+            saveSettings()
+        end
+    end)
+    return row
+end
+
+local function aimSectionHeader(txt, yPos)
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.new(1, 0, 0, 26)
+    bg.Position = UDim2.new(0, 0, 0, yPos)
+    bg.BackgroundColor3 = C.accent
+    bg.BackgroundTransparency = 0.85
+    bg.BorderSizePixel = 0
+    bg.Parent = aimPanel
+    corner(6, bg)
+
+    local stripe = Instance.new("Frame")
+    stripe.Size = UDim2.new(0, 3, 1, -8)
+    stripe.Position = UDim2.new(0, 0, 0, 4)
+    stripe.BackgroundColor3 = C.accent
+    stripe.BorderSizePixel = 0
+    stripe.Parent = bg
+    corner(2, stripe)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -16, 1, 0)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = txt
+    lbl.TextColor3 = C.accentL
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = bg
+    return bg
+end
+
+-- ── GENERAL section ───────────────────────────────────────
+local y = 34
+aimSectionHeader("GENERAL", y); y += 34
+
+-- Keybind row
+local keybindRow = Instance.new("Frame")
+keybindRow.Size = UDim2.new(1, 0, 0, 36)
+keybindRow.Position = UDim2.new(0, 0, 0, y)
+keybindRow.BackgroundColor3 = C.bg0
+keybindRow.BorderSizePixel = 0
+keybindRow.Parent = aimPanel
+corner(8, keybindRow)
+
+local keyLbl = Instance.new("TextLabel")
+keyLbl.Size = UDim2.new(0.55, 0, 1, 0)
+keyLbl.Position = UDim2.new(0, 14, 0, 0)
+keyLbl.BackgroundTransparency = 1
+keyLbl.Text = "Aim Key"
+keyLbl.TextColor3 = C.t2
+keyLbl.Font = Enum.Font.Code
+keyLbl.TextSize = 12
+keyLbl.TextXAlignment = Enum.TextXAlignment.Left
+keyLbl.Parent = keybindRow
+
+local keybindBtn = Instance.new("TextButton")
+keybindBtn.Size = UDim2.new(0, 110, 0, 24)
+keybindBtn.Position = UDim2.new(1, -122, 0.5, -12)
+keybindBtn.BackgroundColor3 = C.accent
+keybindBtn.BorderSizePixel = 0
+keybindBtn.Text = cfg.aimKey
+keybindBtn.TextColor3 = C.white
+keybindBtn.Font = Enum.Font.Code
+keybindBtn.TextSize = 11
+keybindBtn.Parent = keybindRow
+corner(6, keybindBtn)
+
+local waitingForKey = false
+keybindBtn.MouseButton1Click:Connect(function()
+    waitingForKey = true
+    keybindBtn.Text = "Press a key..."
+    keybindBtn.BackgroundColor3 = C.warn
+end)
+uis.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if waitingForKey and input.UserInputType == Enum.UserInputType.Keyboard then
+        local kn = input.KeyCode.Name
+        cfg.aimKey = kn
+        keybindBtn.Text = kn
+        keybindBtn.BackgroundColor3 = C.accent
+        waitingForKey = false
+        saveSettings()
+    end
+end)
+y += 42
+
+aimToggle("Toggle Mode  (off = Hold)", "aimToggleMode", y); y += 42
+aimToggle("Enemy Only", "teamCheck", y); y += 42
+
+-- ── Aim Point (draggable silhouette) ─────────────────────
+do
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 120)
+    row.Position = UDim2.new(0, 0, 0, y)
+    row.BackgroundColor3 = C.bg0
+    row.BorderSizePixel = 0
+    row.Parent = aimPanel
+    corner(8, row)
+    padding(0, 14, 14, 0, row)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 16)
+    lbl.Position = UDim2.new(0, 0, 0, 4)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "Aim Point (drag pin)"
+    lbl.TextColor3 = C.t2
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local pointVal = Instance.new("TextLabel")
+    pointVal.Size = UDim2.new(0.45, 0, 0, 16)
+    pointVal.Position = UDim2.new(0.55, 0, 0, 4)
+    pointVal.BackgroundTransparency = 1
+    pointVal.Text = "Chest"
+    pointVal.TextColor3 = C.accentL
+    pointVal.Font = Enum.Font.Code
+    pointVal.TextSize = 11
+    pointVal.TextXAlignment = Enum.TextXAlignment.Right
+    pointVal.Parent = row
+
+    local silhouetteContainer = Instance.new("Frame")
+    silhouetteContainer.Size = UDim2.new(0.5, 0, 1, -24)
+    silhouetteContainer.Position = UDim2.new(0.25, 0, 0, 24)
+    silhouetteContainer.BackgroundTransparency = 1
+    silhouetteContainer.ClipsDescendants = true
+    silhouetteContainer.Parent = row
+
+    -- vertical track
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(0, 4, 1, 0)
+    track.Position = UDim2.new(0.4, -2, 0, 0)
+    track.BackgroundColor3 = C.bg4
+    track.BorderSizePixel = 0
+    track.Parent = silhouetteContainer
+    corner(2, track)
+
+    -- Silhouette parts
+    local function createSilhouette()
+        local head = Instance.new("Frame")
+        head.Size = UDim2.new(0, 20, 0, 20)
+        head.Position = UDim2.new(0.4, -10, 0.1, -10)
+        head.BackgroundColor3 = C.t3
+        head.BackgroundTransparency = 0.6
+        head.BorderSizePixel = 0
+        head.Parent = silhouetteContainer
+        local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(1,0); hc.Parent = head
+
+        local torso = Instance.new("Frame")
+        torso.Size = UDim2.new(0, 20, 0, 30)
+        torso.Position = UDim2.new(0.4, -10, 0.25, 0)
+        torso.BackgroundColor3 = C.t3
+        torso.BackgroundTransparency = 0.6
+        torso.BorderSizePixel = 0
+        torso.Parent = silhouetteContainer
+        corner(3, torso)
+
+        local lArm = Instance.new("Frame")
+        lArm.Size = UDim2.new(0, 10, 0, 20)
+        lArm.Position = UDim2.new(0.4, -20, 0.27, 0)
+        lArm.BackgroundColor3 = C.t3
+        lArm.BackgroundTransparency = 0.6
+        lArm.BorderSizePixel = 0
+        lArm.Parent = silhouetteContainer
+        corner(2, lArm)
+
+        local rArm = Instance.new("Frame")
+        rArm.Size = UDim2.new(0, 10, 0, 20)
+        rArm.Position = UDim2.new(0.4, 10, 0.27, 0)
+        rArm.BackgroundColor3 = C.t3
+        rArm.BackgroundTransparency = 0.6
+        rArm.BorderSizePixel = 0
+        rArm.Parent = silhouetteContainer
+        corner(2, rArm)
+
+        local lLeg = Instance.new("Frame")
+        lLeg.Size = UDim2.new(0, 10, 0, 25)
+        lLeg.Position = UDim2.new(0.4, -12, 0.5, 0)
+        lLeg.BackgroundColor3 = C.t3
+        lLeg.BackgroundTransparency = 0.6
+        lLeg.BorderSizePixel = 0
+        lLeg.Parent = silhouetteContainer
+        corner(2, lLeg)
+
+        local rLeg = Instance.new("Frame")
+        rLeg.Size = UDim2.new(0, 10, 0, 25)
+        rLeg.Position = UDim2.new(0.4, 2, 0.5, 0)
+        rLeg.BackgroundColor3 = C.t3
+        rLeg.BackgroundTransparency = 0.6
+        rLeg.BorderSizePixel = 0
+        rLeg.Parent = silhouetteContainer
+        corner(2, rLeg)
+    end
+    createSilhouette()
+
+    -- Pin
+    local pinContainer = Instance.new("Frame")
+    pinContainer.Size = UDim2.new(1, 0, 1, 0)
+    pinContainer.BackgroundTransparency = 1
+    pinContainer.Parent = silhouetteContainer
+
+    local pinLine = Instance.new("Frame")
+    pinLine.Size = UDim2.new(0.6, 0, 0, 2)
+    pinLine.Position = UDim2.new(0.2, 0, 0.5, -1)
+    pinLine.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    pinLine.BorderSizePixel = 0
+    pinLine.Parent = pinContainer
+    corner(1, pinLine)
+
+    local knobBtn = Instance.new("TextButton")
+    knobBtn.Size = UDim2.new(0, 14, 0, 14)
+    knobBtn.Position = UDim2.new(0.82, -7, 0.5, -7)
+    knobBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    knobBtn.BorderSizePixel = 2
+    knobBtn.BorderColor3 = Color3.fromRGB(255,255,255)
+    knobBtn.Text = ""
+    knobBtn.Parent = pinContainer
+    local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(1,0); kc.Parent = knobBtn
+
+    local pinDragging = false
+    local dragConn = nil
+
+    local function setPinPos(percent)
+        percent = math.clamp(percent, 0.05, 0.95)
+        cfg.aimOffset = percent
+        pinLine.Position = UDim2.new(0.2, 0, percent, -1)
+        knobBtn.Position = UDim2.new(0.82, -7, percent, -7)
+        local labels = {"Head","Neck","Chest","Body","Waist","Legs","Feet"}
+        local idx = math.floor(percent * (#labels-1)) + 1
+        pointVal.Text = labels[idx] or "Body"
+        saveSettings()
+    end
+
+    setPinPos(cfg.aimOffset or 0.3)
+
+    knobBtn.MouseButton1Down:Connect(function()
+        pinDragging = true
+        if dragConn then dragConn:Disconnect() end
+        dragConn = uis.InputChanged:Connect(function(input)
+            if pinDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local cp = silhouetteContainer.AbsolutePosition
+                local cs = silhouetteContainer.AbsoluteSize
+                local my = uis:GetMouseLocation().Y
+                local p = (my - cp.Y) / cs.Y
+                setPinPos(p)
+            end
+        end)
+    end)
+
+    uis.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            pinDragging = false
+            if dragConn then dragConn:Disconnect(); dragConn = nil end
+        end
+    end)
+
+    silhouetteContainer.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local cp = silhouetteContainer.AbsolutePosition
+            local cs = silhouetteContainer.AbsoluteSize
+            local my = uis:GetMouseLocation().Y
+            local p = (my - cp.Y) / cs.Y
+            setPinPos(p)
+        end
+    end)
+end
+y += 130
+
+-- ── AIMBOT section ────────────────────────────────────────
+aimSectionHeader("AIMBOT", y); y += 34
+aimToggle("Enabled", "aimbotEnabled", y); y += 42
+aimToggle("Visualize FOV", "aimbotVisualizeFOV", y); y += 42
+aimToggle("Wall Check", "aimbotWallCheck", y); y += 42
+aimSlider("FOV Radius", "aimbotFOV", 10, 800, 5, y); y += 58
+
+-- ── SOFT AIM section ──────────────────────────────────────
+aimSectionHeader("SOFT AIM", y); y += 34
+aimToggle("Enabled", "softEnabled", y); y += 42
+aimToggle("Visualize FOV", "softVisualizeFOV", y); y += 42
+aimToggle("Wall Check", "softWallCheck", y); y += 42
+aimToggle("Random Target", "softRandomTarget", y); y += 42
+aimSlider("FOV Radius", "softFOV", 10, 800, 5, y); y += 58
+aimSlider("Smoothness", "softSmoothness", 0, 10, 1, y, function(v)
+    return v .. " (" .. string.format("%.0f%%", 100 / (1 + v * 4.8)) .. " spd)"
+end); y += 58
+
+aimPanel.CanvasSize = UDim2.new(0, 0, 0, y + 20)
+
+-- ════════════════════════════════════════════════════════════
+--  VISUALS PANEL (ESP only)
+-- ════════════════════════════════════════════════════════════
+local visualPanel = Instance.new("ScrollingFrame")
+visualPanel.Size = UDim2.new(1, 0, 1, 0)
+visualPanel.CanvasSize = UDim2.new(0, 0, 0, 350)
+visualPanel.ScrollBarThickness = 3
+visualPanel.ScrollBarImageColor3 = C.accent
+visualPanel.BackgroundColor3 = C.bg2
+visualPanel.BackgroundTransparency = 1
+visualPanel.BorderSizePixel = 0
+visualPanel.Visible = false
+visualPanel.Parent = content
+padding(20, 22, 22, 0, visualPanel)
+
+local visTitle = Instance.new("TextLabel")
+visTitle.Size = UDim2.new(1, -70, 0, 22)
+visTitle.BackgroundTransparency = 1
+visTitle.Text = "Visuals"
+visTitle.TextColor3 = C.t1
+visTitle.Font = Enum.Font.Code
+visTitle.TextSize = 17
+visTitle.TextXAlignment = Enum.TextXAlignment.Left
+visTitle.Parent = visualPanel
+
+local visBadge = Instance.new("TextLabel")
+visBadge.Size = UDim2.new(0, 64, 0, 20)
+visBadge.Position = UDim2.new(1, -64, 0, 1)
+visBadge.BackgroundColor3 = C.bg4
+visBadge.TextColor3 = C.t3
+visBadge.Text = "ESP"
+visBadge.Font = Enum.Font.Code
+visBadge.TextSize = 10
+visBadge.Parent = visualPanel
+corner(4, visBadge)
+
+-- ESP toggles
+local espSettings = {
+    Enabled      = cfg.espEnabled,
+    TeamCheck    = cfg.espEnemyOnly,
+    ShowDistance = cfg.espShowDistance,
+}
+
+local espY = 34
+makeToggleRow("👁", "ESP Enabled", "Draw boxes & names over enemies.",
+    espY, function(isOn)
+        espSettings.Enabled = isOn
+        cfg.espEnabled = isOn
+        saveSettings()
+        if not isOn then
+            for n in pairs(espBoxCache) do espHide(n) end
+        end
+    end, cfg.espEnabled, visualPanel)
+espY += 82
+
+makeToggleRow("🎯", "Enemy Only", "Hide teammates, show only enemies.",
+    espY, function(isOn)
+        espSettings.TeamCheck = isOn
+        cfg.espEnemyOnly = isOn
+        saveSettings()
+    end, cfg.espEnemyOnly, visualPanel)
+espY += 82
+
+makeToggleRow("📏", "Show Distance", "Appends [Xm] distance to player names.",
+    espY, function(isOn)
+        espSettings.ShowDistance = isOn
+        cfg.espShowDistance = isOn
+        saveSettings()
+    end, cfg.espShowDistance, visualPanel)
+espY += 82
+
+visualPanel.CanvasSize = UDim2.new(0, 0, 0, espY + 20)
+
+-- ════════════════════════════════════════════════════════════
+--  SKIN CHANGER PANEL (Melee + Skin combined)
+-- ════════════════════════════════════════════════════════════
+local skinPanel = Instance.new("ScrollingFrame")
+skinPanel.Size = UDim2.new(1, 0, 1, 0)
+skinPanel.CanvasSize = UDim2.new(0, 0, 0, 550)
+skinPanel.ScrollBarThickness = 3
+skinPanel.ScrollBarImageColor3 = C.accent
+skinPanel.BackgroundColor3 = C.bg2
+skinPanel.BackgroundTransparency = 1
+skinPanel.BorderSizePixel = 0
+skinPanel.Visible = false
+skinPanel.Parent = content
+padding(20, 22, 22, 0, skinPanel)
+
+local scTitle = Instance.new("TextLabel")
+scTitle.Size = UDim2.new(1, 0, 0, 22)
+scTitle.BackgroundTransparency = 1
+scTitle.Text = "Skin Changer"
+scTitle.TextColor3 = C.t1
+scTitle.Font = Enum.Font.Code
+scTitle.TextSize = 17
+scTitle.TextXAlignment = Enum.TextXAlignment.Left
+scTitle.Parent = skinPanel
+
+local scBadge = Instance.new("TextLabel")
+scBadge.Size = UDim2.new(0, 70, 0, 20)
+scBadge.Position = UDim2.new(1, -70, 0, 1)
+scBadge.BackgroundColor3 = C.bg4
+scBadge.TextColor3 = C.t3
+scBadge.Text = "Melee + Skin"
+scBadge.Font = Enum.Font.Code
+scBadge.TextSize = 10
+scBadge.Parent = skinPanel
+corner(4, scBadge)
+
+-- ── Melee Swapper section ──────────────────────────────
+local meleeLabel = Instance.new("TextLabel")
+meleeLabel.Size = UDim2.new(1, 0, 0, 14)
+meleeLabel.Position = UDim2.new(0, 0, 0, 34)
+meleeLabel.BackgroundTransparency = 1
+meleeLabel.Text = "MELEE SWAPPER"
+meleeLabel.TextColor3 = C.t4
+meleeLabel.Font = Enum.Font.Code
+meleeLabel.TextSize = 9
+meleeLabel.TextXAlignment = Enum.TextXAlignment.Left
+meleeLabel.Parent = skinPanel
+
+local activeChip = Instance.new("Frame")
+activeChip.Size = UDim2.new(1, 0, 0, 42)
+activeChip.Position = UDim2.new(0, 0, 0, 52)
+activeChip.BackgroundColor3 = C.bg0
+activeChip.BorderSizePixel = 0
+activeChip.Parent = skinPanel
+corner(8, activeChip)
+
+local chipAccent = Instance.new("Frame")
+chipAccent.Size = UDim2.new(0, 3, 1, -12)
+chipAccent.Position = UDim2.new(0, 0, 0, 6)
+chipAccent.BackgroundColor3 = C.accent
+chipAccent.BorderSizePixel = 0
+chipAccent.Parent = activeChip
+corner(2, chipAccent)
+
+local chipLabelTxt = Instance.new("TextLabel")
+chipLabelTxt.Size = UDim2.new(1, -30, 0, 12)
+chipLabelTxt.Position = UDim2.new(0, 14, 0, 8)
+chipLabelTxt.BackgroundTransparency = 1
+chipLabelTxt.Text = "ACTIVE WEAPON"
+chipLabelTxt.TextColor3 = C.t3
+chipLabelTxt.Font = Enum.Font.Code
+chipLabelTxt.TextSize = 9
+chipLabelTxt.TextXAlignment = Enum.TextXAlignment.Left
+chipLabelTxt.Parent = activeChip
+
+local selectedLabel = Instance.new("TextLabel")
+selectedLabel.Size = UDim2.new(1, -30, 0, 16)
+selectedLabel.Position = UDim2.new(0, 14, 0, 20)
+selectedLabel.BackgroundTransparency = 1
+selectedLabel.Text = currentMelee  -- use the restored value
+selectedLabel.TextColor3 = C.accentL
+selectedLabel.Font = Enum.Font.Code
+selectedLabel.TextSize = 13
+selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+selectedLabel.Parent = activeChip
+
+local chipDot = Instance.new("Frame")
+chipDot.Size = UDim2.new(0, 8, 0, 8)
+chipDot.Position = UDim2.new(1, -18, 0.5, -4)
+chipDot.BackgroundColor3 = C.accent
+chipDot.BorderSizePixel = 0
+chipDot.Parent = activeChip
+corner(4, chipDot)
+
+local meleeDropBtn = Instance.new("TextButton")
+meleeDropBtn.Size = UDim2.new(1, 0, 0, 36)
+meleeDropBtn.Position = UDim2.new(0, 0, 0, 102)
+meleeDropBtn.BackgroundColor3 = C.bg0
+meleeDropBtn.TextColor3 = C.t2
+meleeDropBtn.Text = currentMelee .. "  ▼"
+meleeDropBtn.Font = Enum.Font.Code
+meleeDropBtn.TextSize = 13
+meleeDropBtn.BorderSizePixel = 0
+meleeDropBtn.TextXAlignment = Enum.TextXAlignment.Left
+meleeDropBtn.Parent = skinPanel
+corner(8, meleeDropBtn)
+padding(0, 12, 0, 0, meleeDropBtn)
+
+local meleeSearch = Instance.new("TextBox")
+meleeSearch.Size = UDim2.new(1, 0, 0, 30)
+meleeSearch.Position = UDim2.new(0, 0, 0, 142)
+meleeSearch.BackgroundColor3 = C.bg3
+meleeSearch.TextColor3 = C.t1
+meleeSearch.PlaceholderText = "Search melees..."
+meleeSearch.PlaceholderColor3 = C.t4
+meleeSearch.Text = ""
+meleeSearch.Font = Enum.Font.Code
+meleeSearch.TextSize = 12
+meleeSearch.BorderSizePixel = 0
+meleeSearch.Visible = false
+meleeSearch.ZIndex = 5
+meleeSearch.Parent = skinPanel
+corner(8, meleeSearch)
+padding(0, 10, 0, 0, meleeSearch)
+
+local meleeScroll = Instance.new("ScrollingFrame")
+meleeScroll.Size = UDim2.new(1, 0, 0, 120)
+meleeScroll.Position = UDim2.new(0, 0, 0, 176)
+meleeScroll.BackgroundColor3 = C.bg0
+meleeScroll.BorderSizePixel = 0
+meleeScroll.ScrollBarThickness = 3
+meleeScroll.ScrollBarImageColor3 = C.accent
+meleeScroll.Visible = false
+meleeScroll.ZIndex = 5
+meleeScroll.Parent = skinPanel
+corner(8, meleeScroll)
+
+local meleeListLayout = Instance.new("UIListLayout")
+meleeListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+meleeListLayout.Parent = meleeScroll
+padding(4, 4, 4, 4, meleeScroll)
+
+for _, name in ipairs(meleeList) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 30)
+    btn.BackgroundColor3 = C.bg4
+    btn.BackgroundTransparency = 1
+    btn.TextColor3 = C.t2
+    btn.Text = name
+    btn.Font = Enum.Font.Code
+    btn.TextSize = 12
+    btn.BorderSizePixel = 0
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.ZIndex = 6
+    btn.Parent = meleeScroll
+    corner(4, btn)
+    padding(0, 10, 0, 0, btn)
+    btn.MouseEnter:Connect(function() btn.BackgroundTransparency = 0; btn.TextColor3 = C.t1 end)
+    btn.MouseLeave:Connect(function() btn.BackgroundTransparency = 1; btn.TextColor3 = C.t2 end)
+    btn.MouseButton1Click:Connect(function()
+        if renameMelee(name) then
+            selectedLabel.Text = name
+            meleeDropBtn.Text = name .. "  ▼"
+            cfg.selectedMelee = name
+            saveSettings()
+            meleeScroll.Visible = false
+            meleeSearch.Visible = false
+            meleeSearch.Text = ""
+        else
+            warn("Failed to rename melee to: " .. name)
+        end
+    end)
+end
+
+meleeScroll.CanvasSize = UDim2.new(0, 0, 0, meleeListLayout.AbsoluteContentSize.Y + 8)
+meleeListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    meleeScroll.CanvasSize = UDim2.new(0, 0, 0, meleeListLayout.AbsoluteContentSize.Y + 8)
+end)
+
+meleeSearch:GetPropertyChangedSignal("Text"):Connect(function()
+    local q = meleeSearch.Text:lower()
+    for _, btn in ipairs(meleeScroll:GetChildren()) do
+        if btn:IsA("TextButton") then
+            btn.Visible = btn.Text:lower():find(q, 1, true) ~= nil
+        end
+    end
+end)
+
+meleeDropBtn.MouseButton1Click:Connect(function()
+    if meleeScroll.Visible then
+        meleeScroll.Visible = false
+        meleeSearch.Visible = false
+        meleeDropBtn.Text = (selectedLabel.Text ~= "" and selectedLabel.Text or "Choose a melee...") .. "  ▼"
+    else
+        meleeSearch.Visible = true
+        meleeScroll.Visible = true
+        meleeDropBtn.Text = (selectedLabel.Text ~= "" and selectedLabel.Text or "Choose a melee...") .. "  ▲"
+        meleeSearch:CaptureFocus()
+    end
+end)
+
+-- ── Skin Changer section ────────────────────────────────
+local skinLabel = Instance.new("TextLabel")
+skinLabel.Size = UDim2.new(1, 0, 0, 14)
+skinLabel.Position = UDim2.new(0, 0, 0, 306)
+skinLabel.BackgroundTransparency = 1
+skinLabel.Text = "SKIN CHANGER"
+skinLabel.TextColor3 = C.t4
+skinLabel.Font = Enum.Font.Code
+skinLabel.TextSize = 9
+skinLabel.TextXAlignment = Enum.TextXAlignment.Left
+skinLabel.Parent = skinPanel
+
+local ownedSkinInput = Instance.new("TextBox")
+ownedSkinInput.Size = UDim2.new(0.5, -6, 0, 34)
+ownedSkinInput.Position = UDim2.new(0, 0, 0, 324)
+ownedSkinInput.BackgroundColor3 = C.bg0
+ownedSkinInput.BorderSizePixel = 0
+ownedSkinInput.TextColor3 = C.t1
+ownedSkinInput.TextSize = 13
+ownedSkinInput.Font = Enum.Font.Code
+ownedSkinInput.PlaceholderText = "Owned Skin"
+ownedSkinInput.PlaceholderColor3 = C.t4
+ownedSkinInput.Text = cfg.ownedSkin
+ownedSkinInput.Parent = skinPanel
+corner(8, ownedSkinInput)
+padding(0, 12, 0, 0, ownedSkinInput)
+
+local targetSkinInput = Instance.new("TextBox")
+targetSkinInput.Size = UDim2.new(0.5, -6, 0, 34)
+targetSkinInput.Position = UDim2.new(0.5, 6, 0, 324)
+targetSkinInput.BackgroundColor3 = C.bg0
+targetSkinInput.BorderSizePixel = 0
+targetSkinInput.TextColor3 = C.t1
+targetSkinInput.TextSize = 13
+targetSkinInput.Font = Enum.Font.Code
+targetSkinInput.PlaceholderText = "Target Skin"
+targetSkinInput.PlaceholderColor3 = C.t4
+targetSkinInput.Text = cfg.targetSkin
+targetSkinInput.Parent = skinPanel
+corner(8, targetSkinInput)
+padding(0, 12, 0, 0, targetSkinInput)
+
+ownedSkinInput.FocusLost:Connect(function()
+    cfg.ownedSkin = ownedSkinInput.Text
+    saveSettings()
+end)
+targetSkinInput.FocusLost:Connect(function()
+    cfg.targetSkin = targetSkinInput.Text
+    saveSettings()
+end)
+
+local skinStatus = Instance.new("TextLabel")
+skinStatus.Size = UDim2.new(1, 0, 0, 16)
+skinStatus.Position = UDim2.new(0, 0, 0, 366)
+skinStatus.BackgroundTransparency = 1
+skinStatus.Text = "Open locker first!"
+skinStatus.TextColor3 = C.t3
+skinStatus.TextSize = 11
+skinStatus.Font = Enum.Font.Code
+skinStatus.TextXAlignment = Enum.TextXAlignment.Left
+skinStatus.Parent = skinPanel
+
+local function setSkinStatus(text, color)
+    skinStatus.Text = text
+    skinStatus.TextColor3 = color or C.t3
+end
+
+local applySkinBtn = Instance.new("TextButton")
+applySkinBtn.Size = UDim2.new(1, 0, 0, 38)
+applySkinBtn.Position = UDim2.new(0, 0, 0, 386)
+applySkinBtn.BackgroundColor3 = C.accent
+applySkinBtn.BorderSizePixel = 0
+applySkinBtn.Text = "APPLY SKIN"
+applySkinBtn.TextColor3 = C.white
+applySkinBtn.TextSize = 14
+applySkinBtn.Font = Enum.Font.Code
+applySkinBtn.Parent = skinPanel
+corner(8, applySkinBtn)
+
+applySkinBtn.MouseEnter:Connect(function()
+    tweenService:Create(applySkinBtn, hoverInfo, {BackgroundColor3 = C.accentH}):Play()
+end)
+applySkinBtn.MouseLeave:Connect(function()
+    tweenService:Create(applySkinBtn, hoverInfo, {BackgroundColor3 = C.accent}):Play()
+end)
+
+-- Skin changer logic (unchanged)
+local ArmsFolder = ReplicatedStorage:FindFirstChild("Viewmodels") and ReplicatedStorage.Viewmodels:FindFirstChild("Arms")
+local armsCache = {}
+local function getArmParts(folder)
+    local parts = {}
+    for _, c in ipairs(folder:GetChildren()) do
+        if c:IsA("BasePart") or c:IsA("Model") then table.insert(parts, c) end
+    end
+    return parts
+end
+local function cacheArms(n)
+    if armsCache[n] or not ArmsFolder then return end
+    local f = ArmsFolder:FindFirstChild(n)
+    if not f then return end
+    armsCache[n] = {}
+    for _, arm in ipairs(getArmParts(f)) do table.insert(armsCache[n], arm:Clone()) end
+end
+local function equipArms(ownedName, targetName)
+    if not ArmsFolder then return end
+    local of = ArmsFolder:FindFirstChild(ownedName)
+    local tf = ArmsFolder:FindFirstChild(targetName)
+    if not of or not tf then return end
+    cacheArms(ownedName); cacheArms(targetName)
+    for _, arm in ipairs(getArmParts(of)) do arm:Destroy() end
+    if armsCache[targetName] then
+        for _, arm in ipairs(armsCache[targetName]) do arm:Clone().Parent = of end
+    end
+end
+
+local function applySkin()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local ownedName  = ownedSkinInput.Text
+    local targetName = targetSkinInput.Text
+    if ownedName == "" or targetName == "" then setSkinStatus("Fill in both fields!", C.err); return end
+
+    local scrollingFrame = player.PlayerGui:WaitForChild("Menew"):WaitForChild("Locker")
+        :WaitForChild("Equipping"):WaitForChild("ScrollingFrame")
+    local ownedFrame = scrollingFrame:FindFirstChild(ownedName)
+    if not ownedFrame then setSkinStatus("'" .. ownedName .. "' not found! Locker open?", C.err); return end
+
+    ownedFrame.Name = targetName
+    setSkinStatus("Renamed! Click it in the locker...", C.warn)
+
+    local worldModel = player.PlayerGui:WaitForChild("Menew"):WaitForChild("Locker")
+        :WaitForChild("Equipping"):WaitForChild("LockerMain"):WaitForChild("Item")
+        :WaitForChild("ViewportFrame"):WaitForChild("WorldModel")
+    local skinModel = worldModel:WaitForChild(targetName, 15)
+    if not skinModel then setSkinStatus("Model didn't load! Did you click it?", C.err); ownedFrame.Name = ownedName; return end
+
+    setSkinStatus("Model loaded! Applying...", C.ok)
+    local characterHead = character:FindFirstChild("Head")
+
+    for _, obj in ipairs(character:GetChildren()) do
+        if obj:IsA("Shirt") or obj:IsA("Pants") or obj:IsA("BodyColors")
+            or obj:IsA("Accessory") or obj:IsA("Hat") or obj:IsA("ShirtGraphic") then obj:Destroy() end
+    end
+    for _, obj in ipairs(character:GetChildren()) do
+        if obj:IsA("BasePart") and obj.Name == "Handle" then obj:Destroy() end
+    end
+    for _, obj in ipairs(character:GetChildren()) do
+        if obj:IsA("Weld") and obj.Name == "AccessoryWeld" then obj:Destroy() end
+    end
+    for _, obj in ipairs(skinModel:GetChildren()) do
+        if obj:IsA("Shirt") or obj:IsA("Pants") or obj:IsA("BodyColors") or obj:IsA("ShirtGraphic") then
+            obj:Clone().Parent = character end
+    end
+    for _, obj in ipairs(skinModel:GetChildren()) do
+        if obj:IsA("BasePart") and obj.Name == "Handle" then
+            local clone = obj:Clone()
+            clone.Massless = true; clone.CanCollide = false; clone.Anchored = false; clone.Parent = character
+            local accAtt = clone:FindFirstChildOfClass("Attachment")
+            if accAtt then
+                for _, part in ipairs(character:GetDescendants()) do
+                    if part:IsA("Attachment") and part.Name == accAtt.Name and part.Parent ~= clone then
+                        local w = Instance.new("Weld"); w.Name = "AccessoryWeld"
+                        w.Part0 = clone; w.Part1 = part.Parent
+                        w.C0 = clone.CFrame:ToObjectSpace(accAtt.WorldCFrame)
+                        w.C1 = part.Parent.CFrame:ToObjectSpace(part.WorldCFrame)
+                        w.Parent = clone; break
+                    end
+                end
+            end
+        end
+    end
+
+    local skinHead       = skinModel:FindFirstChild("Head")
+    local skinBodyColors = skinModel:FindFirstChildOfClass("BodyColors")
+    if skinHead and characterHead then
+        local headColor = skinHead.Color
+        if skinBodyColors then headColor = skinBodyColors.HeadColor3 end
+        characterHead.Color = headColor
+        for _, obj in ipairs(characterHead:GetChildren()) do
+            if obj:IsA("SurfaceAppearance") or obj:IsA("Decal") then obj:Destroy() end
+        end
+        for _, obj in ipairs(skinHead:GetChildren()) do
+            if obj:IsA("SurfaceAppearance") or obj:IsA("Decal") then obj:Clone().Parent = characterHead end
+        end
+        task.spawn(function()
+            while character and character.Parent do
+                if characterHead.Color ~= headColor then characterHead.Color = headColor end
+                task.wait(0.1)
+            end
+        end)
+    end
+
+    setSkinStatus("Skin applied!", C.ok)
+    task.spawn(function() equipArms(ownedName, targetName) end)
+    ownedFrame.Name = ownedName
+end
+
+applySkinBtn.MouseButton1Click:Connect(function()
+    task.spawn(function()
+        local ok, err = pcall(applySkin)
+        if not ok then setSkinStatus("Error: " .. tostring(err), C.err) end
+    end)
+end)
+
+skinPanel.CanvasSize = UDim2.new(0, 0, 0, 440)
+
+-- ════════════════════════════════════════════════════════════
+--  EXTRA PANEL (Crafting, Cases, Motion Blur, Night Mode, Kill Effects)
+-- ════════════════════════════════════════════════════════════
+local extraPanel = Instance.new("ScrollingFrame")
+extraPanel.Size = UDim2.new(1, 0, 1, 0)
+extraPanel.CanvasSize = UDim2.new(0, 0, 0, 620)
+extraPanel.ScrollBarThickness = 3
+extraPanel.ScrollBarImageColor3 = C.accent
+extraPanel.BackgroundColor3 = C.bg2
+extraPanel.BackgroundTransparency = 1
+extraPanel.BorderSizePixel = 0
+extraPanel.Visible = false
+extraPanel.Parent = content
+padding(20, 22, 22, 0, extraPanel)
+
+local extraTitle = Instance.new("TextLabel")
+extraTitle.Size = UDim2.new(1, 0, 0, 22)
+extraTitle.BackgroundTransparency = 1
+extraTitle.Text = "Extra"
+extraTitle.TextColor3 = C.t1
+extraTitle.Font = Enum.Font.Code
+extraTitle.TextSize = 17
+extraTitle.TextXAlignment = Enum.TextXAlignment.Left
+extraTitle.Parent = extraPanel
+
+local extraBadge = Instance.new("TextLabel")
+extraBadge.Size = UDim2.new(0, 64, 0, 20)
+extraBadge.Position = UDim2.new(1, -64, 0, 1)
+extraBadge.BackgroundColor3 = C.bg4
+extraBadge.TextColor3 = C.t3
+extraBadge.Text = "Utilities"
+extraBadge.Font = Enum.Font.Code
+extraBadge.TextSize = 10
+extraBadge.Parent = extraPanel
+corner(4, extraBadge)
+
+local extY = 34
+
+-- Crafting Unlocker
+local craftingThread = nil
+makeToggleRow("🔨", "Crafting Unlocker",
+    "Reveals the crafting tab in the Locker (power-ups only).",
+    extY,
+    function(isOn)
+        cfg.craftingUnlocker = isOn
+        saveSettings()
+        if isOn then
+            craftingThread = task.spawn(function()
+                while isOn do
+                    pcall(function() player.PlayerGui.Menew.Locker.Equipping.crafting.Visible = true end)
+                    task.wait()
+                end
+            end)
+        else
+            craftingThread = nil
+        end
+    end,
+    cfg.craftingUnlocker, extraPanel)
+extY += 82
+
+-- Cases Unlocker
+local casesActivated = false
+local casesRow = Instance.new("Frame")
+casesRow.Size = UDim2.new(1, 0, 0, 72)
+casesRow.Position = UDim2.new(0, 0, 0, extY)
+casesRow.BackgroundColor3 = C.bg0
+casesRow.BorderSizePixel = 0
+casesRow.Parent = extraPanel
+corner(12, casesRow)
+
+local casesIconBox = Instance.new("Frame")
+casesIconBox.Size = UDim2.new(0, 32, 0, 32)
+casesIconBox.Position = UDim2.new(0, 14, 0.5, -16)
+casesIconBox.BackgroundColor3 = C.bg4
+casesIconBox.BorderSizePixel = 0
+casesIconBox.Parent = casesRow
+corner(7, casesIconBox)
+
+local casesIconLbl = Instance.new("TextLabel")
+casesIconLbl.Size = UDim2.new(1, 0, 1, 0)
+casesIconLbl.BackgroundTransparency = 1
+casesIconLbl.Text = "📦"
+casesIconLbl.TextSize = 15
+casesIconLbl.Font = Enum.Font.Code
+casesIconLbl.Parent = casesIconBox
+
+local casesTitleLbl = Instance.new("TextLabel")
+casesTitleLbl.Size = UDim2.new(1, -170, 0, 16)
+casesTitleLbl.Position = UDim2.new(0, 56, 0, 16)
+casesTitleLbl.BackgroundTransparency = 1
+casesTitleLbl.Text = "Cases Unlocker"
+casesTitleLbl.TextColor3 = C.t1
+casesTitleLbl.Font = Enum.Font.Code
+casesTitleLbl.TextSize = 13
+casesTitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+casesTitleLbl.Parent = casesRow
+
+local casesDescLbl = Instance.new("TextLabel")
+casesDescLbl.Size = UDim2.new(1, -170, 0, 28)
+casesDescLbl.Position = UDim2.new(0, 56, 0, 34)
+casesDescLbl.BackgroundTransparency = 1
+casesDescLbl.Text = "Reveals all hidden cases in the Shop. One-shot — cannot be undone."
+casesDescLbl.TextColor3 = C.t3
+casesDescLbl.Font = Enum.Font.Code
+casesDescLbl.TextSize = 10
+casesDescLbl.TextXAlignment = Enum.TextXAlignment.Left
+casesDescLbl.TextWrapped = true
+casesDescLbl.Parent = casesRow
+
+local casesBtn = Instance.new("TextButton")
+casesBtn.Size = UDim2.new(0, 72, 0, 28)
+casesBtn.Position = UDim2.new(1, -86, 0.5, -14)
+casesBtn.BackgroundColor3 = C.accent
+casesBtn.BorderSizePixel = 0
+casesBtn.Text = "UNLOCK"
+casesBtn.TextColor3 = C.white
+casesBtn.Font = Enum.Font.Code
+casesBtn.TextSize = 11
+casesBtn.Parent = casesRow
+corner(6, casesBtn)
+
+casesBtn.MouseEnter:Connect(function()
+    if not casesActivated then tweenService:Create(casesBtn, hoverInfo, {BackgroundColor3 = C.accentH}):Play() end
+end)
+casesBtn.MouseLeave:Connect(function()
+    if not casesActivated then tweenService:Create(casesBtn, hoverInfo, {BackgroundColor3 = C.accent}):Play() end
+end)
+casesBtn.MouseButton1Click:Connect(function()
+    if casesActivated then return end
+    casesActivated = true
+    casesBtn.Text = "DONE"
+    casesBtn.BackgroundColor3 = C.ok
+    pcall(function()
+        local lal = player.PlayerGui.Menew.Shop.Cases
+        for _, v in ipairs(lal:GetDescendants()) do
+            pcall(function() if v:IsA("GuiObject") then v.Visible = true end end)
+        end
+    end)
+end)
+extY += 82
+
+-- Motion Blur
+local motionBlurEnabled = cfg.motionBlur
+local motionBlurConn = nil
+local motionBlurEffect = nil
+
+local function enableMotionBlur()
+    if motionBlurEnabled then return end
+    motionBlurEnabled = true
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    motionBlurEffect = Instance.new("BlurEffect")
+    motionBlurEffect.Name = "C2MotionBlur"
+    motionBlurEffect.Size = 0
+    motionBlurEffect.Parent = cam
+    local lastVec = cam.CFrame.LookVector
+    local currentSize = 0
+    motionBlurConn = RunService.Heartbeat:Connect(function(dt)
+        if not motionBlurEnabled then return end
+        local c = workspace.CurrentCamera
+        if not c or not motionBlurEffect then return end
+        local newVec = c.CFrame.LookVector
+        local mag = (newVec - lastVec).Magnitude
+        if mag > 0.005 then
+            currentSize = currentSize + (math.min(mag / dt * 0.8, 22) - currentSize) * 0.15
+        else
+            currentSize = currentSize * 0.95
+        end
+        motionBlurEffect.Size = currentSize
+        lastVec = newVec
+    end)
+end
+
+local function disableMotionBlur()
+    if not motionBlurEnabled then return end
+    motionBlurEnabled = false
+    if motionBlurConn then motionBlurConn:Disconnect(); motionBlurConn = nil end
+    if motionBlurEffect then motionBlurEffect:Destroy(); motionBlurEffect = nil end
+end
+
+if cfg.motionBlur then enableMotionBlur() end
+
+makeToggleRow("💨", "Motion Blur",
+    "Adds a dynamic blur effect when moving the camera.",
+    extY,
+    function(isOn)
+        cfg.motionBlur = isOn
+        saveSettings()
+        if isOn then enableMotionBlur() else disableMotionBlur() end
+    end,
+    cfg.motionBlur, extraPanel)
+extY += 82
+
+-- Night Mode
+local nightModeEnabled = cfg.nightMode
+local savedLighting = {}
+
+local function enableNightMode()
+    if nightModeEnabled then return end
+    nightModeEnabled = true
+    local L = game:GetService("Lighting")
+    savedLighting.Ambient       = L.Ambient
+    savedLighting.Brightness    = L.Brightness
+    savedLighting.OutdoorAmbient= L.OutdoorAmbient
+    savedLighting.ClockTime     = L.ClockTime
+    savedLighting.FogColor      = L.FogColor
+    savedLighting.FogEnd        = L.FogEnd
+    savedLighting.GlobalShadows = L.GlobalShadows
+    L.Ambient        = Color3.new(0.2, 0.2, 0.3)
+    L.Brightness     = 1
+    L.OutdoorAmbient = Color3.new(0.2, 0.2, 0.3)
+    L.ClockTime      = 0
+    L.FogColor       = Color3.new(0.1, 0.1, 0.2)
+    L.FogEnd         = 500
+    L.GlobalShadows  = true
+end
+
+local function disableNightMode()
+    if not nightModeEnabled then return end
+    nightModeEnabled = false
+    local L = game:GetService("Lighting")
+    if savedLighting.Ambient then
+        L.Ambient        = savedLighting.Ambient
+        L.Brightness     = savedLighting.Brightness
+        L.OutdoorAmbient = savedLighting.OutdoorAmbient
+        L.ClockTime      = savedLighting.ClockTime
+        L.FogColor       = savedLighting.FogColor
+        L.FogEnd         = savedLighting.FogEnd
+        L.GlobalShadows  = savedLighting.GlobalShadows
+    end
+end
+
+if cfg.nightMode then enableNightMode() end
+
+makeToggleRow("🌙", "Night Mode",
+    "Sets the game lighting to a dark night atmosphere.",
+    extY,
+    function(isOn)
+        cfg.nightMode = isOn
+        saveSettings()
+        if isOn then enableNightMode() else disableNightMode() end
+    end,
+    cfg.nightMode, extraPanel)
+extY += 82
+
+-- Kill Effects
+local killLabel = Instance.new("TextLabel")
+killLabel.Size = UDim2.new(1, 0, 0, 14)
+killLabel.Position = UDim2.new(0, 0, 0, extY)
+killLabel.BackgroundTransparency = 1
+killLabel.Text = "KILL EFFECTS"
+killLabel.TextColor3 = C.t4
+killLabel.Font = Enum.Font.Code
+killLabel.TextSize = 9
+killLabel.TextXAlignment = Enum.TextXAlignment.Left
+killLabel.Parent = extraPanel
+extY += 18
+
+local killActiveChip = Instance.new("Frame")
+killActiveChip.Size = UDim2.new(1, 0, 0, 38)
+killActiveChip.Position = UDim2.new(0, 0, 0, extY)
+killActiveChip.BackgroundColor3 = C.bg0
+killActiveChip.BorderSizePixel = 0
+killActiveChip.Parent = extraPanel
+corner(8, killActiveChip)
+
+local killChipAccent = Instance.new("Frame")
+killChipAccent.Size = UDim2.new(0, 3, 1, -12)
+killChipAccent.Position = UDim2.new(0, 0, 0, 6)
+killChipAccent.BackgroundColor3 = cfg.killEffect and C.ok or C.t4
+killChipAccent.BorderSizePixel = 0
+killChipAccent.Parent = killActiveChip
+corner(2, killChipAccent)
+
+local killActiveVal = Instance.new("TextLabel")
+killActiveVal.Size = UDim2.new(1, -30, 1, 0)
+killActiveVal.Position = UDim2.new(0, 14, 0, 0)
+killActiveVal.BackgroundTransparency = 1
+killActiveVal.Text = cfg.killEffect or "None — default"
+killActiveVal.TextColor3 = cfg.killEffect and C.accentL or C.t3
+killActiveVal.Font = Enum.Font.Code
+killActiveVal.TextSize = 12
+killActiveVal.TextXAlignment = Enum.TextXAlignment.Left
+killActiveVal.Parent = killActiveChip
+
+local killActiveDot = Instance.new("Frame")
+killActiveDot.Size = UDim2.new(0, 8, 0, 8)
+killActiveDot.Position = UDim2.new(1, -18, 0.5, -4)
+killActiveDot.BackgroundColor3 = cfg.killEffect and C.ok or C.t4
+killActiveDot.BorderSizePixel = 0
+killActiveDot.Parent = killActiveChip
+corner(4, killActiveDot)
+
+extY += 46
+
+local killDropBtn = Instance.new("TextButton")
+killDropBtn.Size = UDim2.new(1, 0, 0, 36)
+killDropBtn.Position = UDim2.new(0, 0, 0, extY)
+killDropBtn.BackgroundColor3 = C.bg0
+killDropBtn.TextColor3 = C.t2
+killDropBtn.Text = (cfg.killEffect and cfg.killEffect or "Choose an effect...") .. "  ▼"
+killDropBtn.Font = Enum.Font.Code
+killDropBtn.TextSize = 13
+killDropBtn.BorderSizePixel = 0
+killDropBtn.TextXAlignment = Enum.TextXAlignment.Left
+killDropBtn.Parent = extraPanel
+corner(8, killDropBtn)
+padding(0, 12, 0, 0, killDropBtn)
+
+local killSearch = Instance.new("TextBox")
+killSearch.Size = UDim2.new(1, 0, 0, 30)
+killSearch.Position = UDim2.new(0, 0, 0, extY + 40)
+killSearch.BackgroundColor3 = C.bg3
+killSearch.TextColor3 = C.t1
+killSearch.PlaceholderText = "Search effects..."
+killSearch.PlaceholderColor3 = C.t4
+killSearch.Text = ""
+killSearch.Font = Enum.Font.Code
+killSearch.TextSize = 12
+killSearch.BorderSizePixel = 0
+killSearch.Visible = false
+killSearch.ZIndex = 5
+killSearch.Parent = extraPanel
+corner(8, killSearch)
+padding(0, 10, 0, 0, killSearch)
+
+local killScroll = Instance.new("ScrollingFrame")
+killScroll.Size = UDim2.new(1, 0, 0, 120)
+killScroll.Position = UDim2.new(0, 0, 0, extY + 74)
+killScroll.BackgroundColor3 = C.bg0
+killScroll.BorderSizePixel = 0
+killScroll.ScrollBarThickness = 3
+killScroll.ScrollBarImageColor3 = C.accent
+killScroll.Visible = false
+killScroll.ZIndex = 5
+killScroll.Parent = extraPanel
+corner(8, killScroll)
+
+local killListLayout = Instance.new("UIListLayout")
+killListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+killListLayout.Parent = killScroll
+padding(4, 4, 4, 4, killScroll)
+killListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    killScroll.CanvasSize = UDim2.new(0, 0, 0, killListLayout.AbsoluteContentSize.Y + 8)
+end)
+
+local selectedKillEffect = cfg.killEffect
+local killEffectsFolder = ReplicatedStorage:FindFirstChild("ItemData") and ReplicatedStorage.ItemData:FindFirstChild("KillEffects")
+
+local function populateKillDropdown()
+    for _, child in ipairs(killScroll:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    killSearch.Text = ""
+    local names = {}
+    if killEffectsFolder then
+        for _, c in ipairs(killEffectsFolder:GetChildren()) do table.insert(names, c.Name) end
+        table.sort(names)
+    else
+        names = killEffectList
+    end
+    for _, name in ipairs(names) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, 0, 0, 30)
+        btn.BackgroundColor3 = C.bg4
+        btn.BackgroundTransparency = 1
+        btn.TextColor3 = C.t2
+        btn.Text = name
+        btn.Font = Enum.Font.Code
+        btn.TextSize = 12
+        btn.BorderSizePixel = 0
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.ZIndex = 6
+        btn.Parent = killScroll
+        corner(4, btn)
+        padding(0, 10, 0, 0, btn)
+        btn.MouseEnter:Connect(function() btn.BackgroundTransparency = 0; btn.TextColor3 = C.t1 end)
+        btn.MouseLeave:Connect(function() btn.BackgroundTransparency = 1; btn.TextColor3 = C.t2 end)
+        btn.MouseButton1Click:Connect(function()
+            selectedKillEffect = name
+            cfg.killEffect = name
+            saveSettings()
+            killDropBtn.Text = name .. "  ▼"
+            killActiveVal.Text = name
+            killActiveVal.TextColor3 = C.accentL
+            killChipAccent.BackgroundColor3 = C.ok
+            killActiveDot.BackgroundColor3 = C.ok
+            killScroll.Visible = false
+            killSearch.Visible = false
+            killSearch.Text = ""
+        end)
+    end
+end
+
+killSearch:GetPropertyChangedSignal("Text"):Connect(function()
+    local q = killSearch.Text:lower()
+    for _, btn in ipairs(killScroll:GetChildren()) do
+        if btn:IsA("TextButton") then
+            btn.Visible = btn.Text:lower():find(q, 1, true) ~= nil
+        end
+    end
+end)
+
+killDropBtn.MouseButton1Click:Connect(function()
+    if killScroll.Visible then
+        killScroll.Visible = false
+        killSearch.Visible = false
+        killSearch.Text = ""
+        killDropBtn.Text = (selectedKillEffect or "Choose an effect...") .. "  ▼"
+    else
+        populateKillDropdown()
+        killSearch.Visible = true
+        killScroll.Visible = true
+        killDropBtn.Text = (selectedKillEffect or "Choose an effect...") .. "  ▲"
+        killSearch:CaptureFocus()
+    end
+end)
+
+-- Kill effect watcher
+local KillEffectNames = {}
+if killEffectsFolder then
+    for _, c in ipairs(killEffectsFolder:GetChildren()) do KillEffectNames[c.Name] = true end
+    killEffectsFolder.ChildAdded:Connect(function(c) KillEffectNames[c.Name] = true end)
+else
+    for _, n in ipairs(killEffectList) do KillEffectNames[n] = true end
+end
+
+workspace.ChildAdded:Connect(function(child)
+    if not child:IsA("Model") then return end
+    if not selectedKillEffect or not KillEffectNames[child.Name] then return end
+    local targetFolder = killEffectsFolder and killEffectsFolder:FindFirstChild(selectedKillEffect)
+    if not targetFolder then return end
+    for _, c in ipairs(child:GetChildren()) do c:Destroy() end
+    for _, c in ipairs(targetFolder:GetChildren()) do c:Clone().Parent = child end
+end)
+
+extY += 120
+extraPanel.CanvasSize = UDim2.new(0, 0, 0, extY + 20)
+
+-- ════════════════════════════════════════════════════════════
+--  TAB SWITCHING
+-- ════════════════════════════════════════════════════════════
+local allPanels = {aimPanel, visualPanel, skinPanel, extraPanel}
+local function showPanel(p)
+    for _, panel in ipairs(allPanels) do panel.Visible = (panel == p) end
+end
+
+aimTabBtn.MouseButton1Click:Connect(function() showPanel(aimPanel); setActiveTab(aimTabBtn) end)
+visTabBtn.MouseButton1Click:Connect(function() showPanel(visualPanel); setActiveTab(visTabBtn) end)
+skinTabBtn.MouseButton1Click:Connect(function() showPanel(skinPanel); setActiveTab(skinTabBtn) end)
+extraTabBtn.MouseButton1Click:Connect(function() showPanel(extraPanel); setActiveTab(extraTabBtn) end)
+
+setActiveTab(aimTabBtn)
+
+-- ════════════════════════════════════════════════════════════
+--  ESP RENDERING
+-- ════════════════════════════════════════════════════════════
+local espBoxCache  = {}
+local espTextCache = {}
+
+local espTeamColors = {
+    ["Red"]    = Color3.fromRGB(255,  50,  50),
+    ["Blue"]   = Color3.fromRGB( 50, 150, 255),
+    ["Green"]  = Color3.fromRGB( 50, 255,  50),
+    ["Yellow"] = Color3.fromRGB(255, 255,  50),
+    ["Purple"] = Color3.fromRGB(200,  50, 255),
+    ["Orange"] = Color3.fromRGB(255, 150,  50),
+    ["Neon"]   = Color3.fromRGB(  0, 255, 200),
+    ["Pink"]   = Color3.fromRGB(255, 100, 200),
+}
+
+local function espGetTeamColor(plr)
+    if not plr.Team then return Color3.fromRGB(200, 200, 200) end
+    local c = espTeamColors[plr.Team.Name]
+    if c then return c end
+    local tc = plr.Team.TeamColor
+    return tc and tc.Color or Color3.fromRGB(200, 200, 200)
+end
+
+local function espHide(name)
+    if espBoxCache[name]  then espBoxCache[name].Visible  = false end
+    if espTextCache[name] then espTextCache[name].Visible = false end
+end
+
+Players.PlayerRemoving:Connect(function(plr)
+    local n = plr.Name
+    if espBoxCache[n]  then espBoxCache[n]:Remove();  espBoxCache[n]  = nil end
+    if espTextCache[n] then espTextCache[n]:Remove(); espTextCache[n] = nil end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if not espSettings.Enabled then
+        for n in pairs(espBoxCache) do espHide(n) end
+        return
+    end
+    for _, plr in pairs(Players:GetPlayers()) do
+        local char = plr.Character
+        local n    = plr.Name
+        if plr == player then espHide(n); continue end
+        if espSettings.TeamCheck and plr.Team and player.Team and plr.Team == player.Team then
+            espHide(n); continue
+        end
+        if not char then espHide(n); continue end
+        local hrp  = char:FindFirstChild("HumanoidRootPart")
+        local head = char:FindFirstChild("Head")
+        if not hrp or not head then espHide(n); continue end
+        local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+        if not onScreen then espHide(n); continue end
+
+        local col = espGetTeamColor(plr)
+
+        if not espBoxCache[n] then
+            local b = Drawing.new("Square")
+            b.Thickness = 2
+            b.Filled = false
+            b.Transparency = 1
+            espBoxCache[n] = b
+        end
+        local box = espBoxCache[n]
+        local topPt = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 2.5, 0))
+        local botPt = Camera:WorldToViewportPoint(hrp.Position  - Vector3.new(0, 2.5, 0))
+        local h = math.max(math.abs(topPt.Y - botPt.Y), 40)
+        local w = math.max(h * 0.7, 28)
+        box.Size     = Vector2.new(w, h)
+        box.Position = Vector2.new(pos.X - w/2, pos.Y - h/2)
+        box.Color    = col
+        box.Visible  = true
+
+        if not espTextCache[n] then
+            local t = Drawing.new("Text")
+            t.Size = 18; t.Center = true; t.Outline = true
+            t.OutlineColor = Color3.fromRGB(0, 0, 0)
+            t.Transparency = 1
+            t.Font = Drawing.Fonts.Plex
+            espTextCache[n] = t
+        end
+        local txt = espTextCache[n]
+        local label = plr.DisplayName or plr.Name
+        if espSettings.ShowDistance then
+            local dist = math.floor((hrp.Position - Camera.CFrame.Position).Magnitude)
+            label = label .. "  [" .. dist .. "m]"
+        end
+        txt.Text     = label
+        txt.Color    = col
+        txt.Position = Vector2.new(pos.X, pos.Y - h/2 - 25)
+        txt.Visible  = true
+    end
+end)
+
+-- ════════════════════════════════════════════════════════════
+--  AIM ENGINE (with Hold/Toggle)
+-- ════════════════════════════════════════════════════════════
+local aimActive = false
+local lastToggle = 0
+local fovCircle, softFovCircle
+
+local function getAimKey()
+    return Enum.KeyCode[cfg.aimKey] or Enum.KeyCode.LeftShift
+end
+local function getSmoothSpeed(s)
+    return 1 / (1 + s * 4.8)
+end
+local function getClosestEnemy(fov, wallCheck)
+    local closest, closestDist = nil, fov
+    local char = player.Character
+    if not char then return nil end
+    local mousePos = uis:GetMouseLocation()
+    for _, enemy in pairs(Players:GetPlayers()) do
+        if enemy == player then continue end
+        local eChar = enemy.Character
+        if not eChar then continue end
+        local eHum = eChar:FindFirstChild("Humanoid")
+        if not eHum or eHum.Health <= 0 then continue end
+        local eHead = eChar:FindFirstChild("Head")
+        local eRoot = eChar:FindFirstChild("HumanoidRootPart")
+        if not eHead or not eRoot then continue end
+        if wallCheck then
+            local origin = Camera.CFrame.Position
+            local dir = (eHead.Position - origin).Unit
+            local ray = Ray.new(origin, dir * 1000)
+            local hit = workspace:FindPartOnRay(ray, char)
+            if hit and not hit:IsDescendantOf(eChar) then continue end
+        end
+        local hp, on = Camera:WorldToViewportPoint(eHead.Position)
+        if not on then continue end
+        local dist = (Vector2.new(hp.X, hp.Y) - mousePos).Magnitude
+        if dist < closestDist then
+            if cfg.teamCheck then
+                local mt, et = player.Team, enemy.Team
+                if (mt and et and mt ~= et) or (not mt and not et) then
+                    closestDist = dist; closest = enemy
+                end
+            else
+                closestDist = dist; closest = enemy
+            end
+        end
+    end
+    return closest
+end
+local function getAimPosition(target, mode)
+    if not target or not target.Character then return nil end
+    local tc = target.Character
+    local head = tc:FindFirstChild("Head")
+    local root = tc:FindFirstChild("HumanoidRootPart")
+    if not head then return nil end
+    if mode == "Soft" and cfg.softRandomTarget then
+        return (math.random(1,2) == 1) and head.Position or (root and (head.Position + root.Position)/2 or head.Position)
+    end
+    local offset = cfg.aimOffset
+    if root then
+        return head.Position:Lerp(root.Position, offset * 1.2)
+    else
+        return head.Position - Vector3.new(0, offset * 3, 0)
+    end
+end
+
+uis.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard
+        and input.KeyCode == getAimKey()
+        and cfg.aimToggleMode
+        and not waitingForKey then
+        if tick() - lastToggle > 0.2 then aimActive = not aimActive; lastToggle = tick() end
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    local shouldAim = cfg.aimToggleMode and aimActive or uis:IsKeyDown(getAimKey())
+    if shouldAim then
+        if cfg.aimbotEnabled then
+            pcall(function()
+                local t = getClosestEnemy(cfg.aimbotFOV, cfg.aimbotWallCheck)
+                if t then
+                    local pos = getAimPosition(t, "Aim")
+                    if pos then Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, pos), 0.3) end
+                end
+            end)
+        elseif cfg.softEnabled then
+            pcall(function()
+                local t = getClosestEnemy(cfg.softFOV, cfg.softWallCheck)
+                if t then
+                    local pos = getAimPosition(t, "Soft")
+                    if pos then Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, pos), getSmoothSpeed(cfg.softSmoothness)) end
+                end
+            end)
+        end
+    end
+
+    if cfg.aimbotVisualizeFOV and cfg.aimbotEnabled then
+        if not fovCircle then fovCircle = Drawing.new("Circle"); fovCircle.Thickness = 2; fovCircle.NumSides = 64; fovCircle.Filled = false; fovCircle.Transparency = 0.5 end
+        fovCircle.Visible = true
+        fovCircle.Radius = cfg.aimbotFOV
+        fovCircle.Color = Color3.fromRGB(cfg.aimbotFOVColor[1], cfg.aimbotFOVColor[2], cfg.aimbotFOVColor[3])
+        fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    elseif fovCircle then fovCircle.Visible = false end
+
+    if cfg.softVisualizeFOV and cfg.softEnabled then
+        if not softFovCircle then softFovCircle = Drawing.new("Circle"); softFovCircle.Thickness = 2; softFovCircle.NumSides = 64; softFovCircle.Filled = false; softFovCircle.Transparency = 0.5 end
+        softFovCircle.Visible = true
+        softFovCircle.Radius = cfg.softFOV
+        softFovCircle.Color = Color3.fromRGB(cfg.softFOVColor[1], cfg.softFOVColor[2], cfg.softFOVColor[3])
+        softFovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    elseif softFovCircle then softFovCircle.Visible = false end
+end)
+
+-- ════════════════════════════════════════════════════════════
+--  DRAGGING
+-- ════════════════════════════════════════════════════════════
+local dragging, dragStart, startPos = false, nil, nil
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true; dragStart = input.Position; startPos = frame.Position
+    end
+end)
+uis.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+uis.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
+
+-- ════════════════════════════════════════════════════════════
+--  OPEN / CLOSE
+-- ════════════════════════════════════════════════════════════
+local guiOpen = false
+local function openGui()
+    guiOpen = true
+    frame.Visible = true
+end
+local function closeGui()
+    guiOpen = false
+    frame.Visible = false
+end
+
+uis.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        if guiOpen then closeGui() else openGui() end
+    end
+end)
+
+print("✅ C2 Hub loaded — RightShift to toggle")
+print("💾 Settings saved automatically.")
+print("🎯 Aim point: drag the red pin on the silhouette.")
+print("👁 ESP in Visuals tab | Motion Blur & Night Mode in Extra.")
